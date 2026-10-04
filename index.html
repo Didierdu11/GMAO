@@ -1,4 +1,376 @@
-<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#135d9e"><title>Pièces de rechange</title><style>*{box-sizing:border-box}body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f3f5f7;color:#17202a}header{background:#135d9e;color:#fff;padding:18px 14px;position:sticky;top:0;z-index:2}h1{margin:0 0 4px;font-size:24px}main{max-width:900px;margin:auto;padding:12px}.card,.result{background:#fff;border-radius:12px;padding:14px;margin:10px 0;box-shadow:0 2px 7px #0001}input,button{font:inherit;padding:12px;border-radius:8px}#q{width:100%;border:1px solid #aab4bd;font-size:18px}button{border:0;background:#135d9e;color:#fff;margin:8px 4px 0 0;cursor:pointer}.danger{background:#a52828}.muted{color:#66727c;font-size:14px}.result{border-left:5px solid #135d9e;cursor:pointer}.ref{font-size:18px;font-weight:700}.loc{color:#b33b00;font-size:22px;font-weight:700;margin-top:5px}.detail{display:none}.detail.show{display:block}.row{display:flex;justify-content:space-between;gap:15px;border-bottom:1px solid #e5e8eb;padding:7px 0}.row b{color:#43515c}.row span{text-align:right;overflow-wrap:anywhere}.ok,.error,.info{margin-top:12px;padding:12px;border-radius:8px}.ok{background:#e6f6ea;color:#176b31}.error{background:#feecec;color:#9b2020}.info{background:#e8f2fc;color:#164d7d}</style></head><body><header><h1>Pièces de rechange</h1><div>Recherche locale hors connexion</div></header><main><div class="card"><input id="q" type="text" placeholder="Référence, désignation, emplacement, meuble…" autocomplete="off"><div id="count" class="muted"></div></div><div class="card"><b>Mise à jour de la liste</b><p class="muted">Téléchargez la dernière liste depuis GitHub ou choisissez un CSV exporté depuis Access.</p><button id="downloadGithub">Télécharger la dernière version depuis GitHub</button><br><input id="file" type="file" accept=".csv,text/csv"><div id="status"></div><div id="importok"></div><button id="export">Exporter une sauvegarde locale</button><button id="clear" class="danger">Effacer la base locale</button></div><section id="results"></section><div id="detail" class="card detail"></div></main><script>
-const GITHUB_CSV_URL="https://raw.githubusercontent.com/Didierdu11/GMAO/main/T_piece_de_rechange.csv";
-const KEY="pieces-rechange-v7";const REQUIRED=["Référence","Emplacement"];const FIELDS=["N° pièce","CodeSAP","Désignation","Référence","Fabriquant","Référence fabricant","IDFamille","Fournisseur","Prix","Stock","Stock sécurité","Stock MAXI","Coût reconditionnement","Emplacement","Notes","Pièce à réparer","Delai de reappro","photos","Remis en état","lien plan meca","Criticité","Pieces SAP","Masqué","Statut_piece","Statut_Date","Meuble","Tiroir","Position","Supprime","Date_supp","Nom_Supp"];let data=[],meta=null;try{data=JSON.parse(localStorage.getItem(KEY)||"[]");meta=JSON.parse(localStorage.getItem(KEY+"-meta")||"null")}catch(e){console.warn("Stockage local indisponible",e)}const $=s=>document.querySelector(s),q=$("#q"),results=$("#results"),count=$("#count"),detail=$("#detail"),status=$("#status"),importOk=$("#importok");function escapeHtml(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}function normalize(v){return String(v??"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[\s._-]+/g,"")}function showMessage(type,text){status.className=type;status.textContent=text}function updateImportInfo(){if(meta&&data.length){importOk.innerHTML='<div class="ok"><b>✓ Fichier chargé correctement</b><br>'+data.length.toLocaleString("fr-FR")+' lignes importées · '+escapeHtml(meta.file)+' · '+escapeHtml(meta.date)+'</div>'}else importOk.innerHTML='<div class="muted">Aucun fichier chargé.</div>'}function emplacement(p){const e=p["Emplacement"]||"",meuble=p["Meuble"]||"",tiroir=p["Tiroir"]||"",position=p["Position"]||"";const d=[meuble&&"Meuble "+meuble,tiroir&&"Tiroir "+tiroir,position&&"Position "+position].filter(Boolean).join(" · ");return e||(d||"Non renseigné")}function render(){const t=normalize(q.value),m=data.filter(p=>!t||normalize(Object.values(p).join(" ")).includes(t));count.textContent=m.length+" résultat(s) sur "+data.length;results.innerHTML=m.slice(0,150).map(p=>'<div class="result" data-id="'+escapeHtml(p["N° pièce"])+'"><div class="ref">'+escapeHtml(p["Référence"]||p["CodeSAP"]||p["N° pièce"])+"</div><div>"+escapeHtml(p["Désignation"])+"</div><div class="loc">Emplacement : "+escapeHtml(emplacement(p))+"</div><div class="muted">Code SAP : "+escapeHtml(p["CodeSAP"])+" · Stock : "+escapeHtml(p["Stock"])+" · Statut : "+escapeHtml(p["Statut_piece"])+"</div></div>').join("")+(m.length>150?'<div class="card muted">Affinez la recherche pour afficher les résultats suivants.</div>':'');results.querySelectorAll(".result").forEach(el=>el.addEventListener("click",()=>showDetail(data.find(p=>String(p["N° pièce"])===el.dataset.id))))}function showDetail(p){if(!p)return;detail.className="card detail show";detail.innerHTML="<h2>Détail de la pièce</h2>"+FIELDS.map(f=>'<div class="row"><b>'+escapeHtml(f)+"</b><span>"+escapeHtml(p[f]||"")+"</span></div>").join("")+'<button id="closeDetail">Fermer</button>';$("#closeDetail").addEventListener("click",()=>detail.className="card detail");detail.scrollIntoView({behavior:"smooth"})}function parseCSV(text){const rows=[];let row=[],cell="",quoted=false;for(let i=0;i<text.length;i++){const c=text[i],n=text[i+1];if(c==='"'){if(quoted&&n==='"'){cell+='"';i++}else quoted=!quoted}else if(c===';'&&!quoted){row.push(cell);cell=""}else if((c==="\n"||c==="\r")&&!quoted){if(c==="\r"&&n==="\n")i++;row.push(cell);if(row.some(v=>v.trim()!==""))rows.push(row);row=[];cell=""}else cell+=c}if(cell!==""||row.length){row.push(cell);if(row.some(v=>v.trim()!==""))rows.push(row)}return rows}function importCsvText(text,fileName){const rows=parseCSV(text);if(rows.length<2)throw new Error("Le fichier ne contient aucune ligne de données.");const headers=rows[0].map(h=>h.trim().replace(/^\uFEFF/,"")),missing=REQUIRED.filter(h=>!headers.includes(h));if(missing.length)throw new Error("Colonnes manquantes : "+missing.join(", "));const imported=rows.slice(1).map(row=>{const item={};headers.forEach((h,i)=>item[h]=(row[i]||"").trim());return item}).filter(item=>Object.values(item).some(v=>v!==""));if(!imported.length)throw new Error("Aucune pièce valide détectée.");data=imported;meta={file:fileName,date:new Date().toLocaleString("fr-FR")};localStorage.setItem(KEY,JSON.stringify(data));localStorage.setItem(KEY+"-meta",JSON.stringify(meta));showMessage("","");updateImportInfo();render()}async function downloadFromGitHub(){try{showMessage("info","Téléchargement de la dernière liste depuis GitHub…");const response=await fetch(GITHUB_CSV_URL+"?t="+Date.now(),{cache:"no-store"});if(!response.ok)throw new Error("Fichier indisponible : HTTP "+response.status);const buffer=await response.arrayBuffer(),text=new TextDecoder("windows-1252").decode(buffer);importCsvText(text,"T_piece_de_rechange.csv — GitHub")}catch(error){console.error(error);showMessage("error","Téléchargement impossible : "+error.message)}}$("#file").addEventListener("change",function(){const file=this.files&&this.files[0];if(!file)return;showMessage("info","Lecture de "+file.name+"…");const reader=new FileReader();reader.onload=()=>{try{importCsvText(reader.result,file.name)}catch(error){console.error(error);showMessage("error","Import impossible : "+error.message)}};reader.onerror=()=>showMessage("error","Erreur de lecture du fichier.");reader.readAsText(file,"windows-1252")});$("#downloadGithub").addEventListener("click",downloadFromGitHub);q.addEventListener("input",render);$("#clear").addEventListener("click",()=>{if(!confirm("Effacer la base locale ?"))return;data=[];meta=null;localStorage.removeItem(KEY);localStorage.removeItem(KEY+"-meta");showMessage("info","Base locale effacée.");updateImportInfo();render()});$("#export").addEventListener("click",()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));a.download="pieces-sauvegarde.json";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500)});updateImportInfo();render();
-</script></body></html>
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#135d9e">
+<title>Pièces de rechange</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f3f5f7;color:#17202a}
+header{background:#135d9e;color:#fff;padding:14px;position:sticky;top:0;z-index:2}
+h1{margin:0 0 2px;font-size:22px}
+main{max-width:900px;margin:auto;padding:12px}
+.card,.result{background:#fff;border-radius:12px;padding:14px;margin:10px 0;box-shadow:0 2px 7px #0001}
+input[type=text],button,input[type=file]{font:inherit;padding:12px;border-radius:8px}
+#q{width:100%;border:1px solid #aab4bd;font-size:18px}
+button{border:0;background:#135d9e;color:#fff;margin:8px 4px 0 0;cursor:pointer}
+.danger{background:#a52828}
+.muted{color:#66727c;font-size:14px}
+.opt{display:inline-block;margin:8px 14px 0 0;font-size:14px;color:#43515c}
+.result{border-left:5px solid #135d9e;cursor:pointer}
+.ref{font-size:18px;font-weight:700}
+.loc{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}
+.chip{background:#fff4ec;border:1px solid #f0c3a6;border-radius:8px;padding:4px 10px;text-align:center;min-width:76px}
+.chip small{display:block;font-size:11px;color:#8a4a22;text-transform:uppercase;letter-spacing:.04em}
+.chip b{font-size:22px;color:#b33b00}
+.chip.empty{background:#f3f5f7;border-color:#dde1e5}
+.chip.empty b{color:#9aa4ad}
+.sep{align-self:center;color:#b33b00;font-weight:700;font-size:20px}
+.free{color:#b33b00;font-size:20px;font-weight:700;margin:6px 0 2px}
+.note{font-size:13px;color:#66727c}
+.tag{display:inline-block;font-size:12px;border-radius:6px;padding:2px 7px;margin-left:6px;vertical-align:middle;background:#eee;color:#555}
+.tag.low{background:#fff0d6;color:#8a5a00}.tag.out{background:#feecec;color:#9b2020}
+.detail{display:none}.detail.show{display:block}
+.row{display:flex;justify-content:space-between;gap:15px;border-bottom:1px solid #e5e8eb;padding:7px 0}
+.row b{color:#43515c}.row span{text-align:right;overflow-wrap:anywhere}
+.ok,.error,.info{margin-top:12px;padding:12px;border-radius:8px}
+.ok{background:#e6f6ea;color:#176b31}.error{background:#feecec;color:#9b2020}.info{background:#e8f2fc;color:#164d7d}
+</style>
+</head>
+<body>
+<header><h1>Pièces de rechange</h1><div>Recherche locale hors connexion</div></header>
+<main>
+  <div class="card">
+    <input id="q" type="text" placeholder="Référence, désignation, emplacement (ex. 20-3-401)…" autocomplete="off">
+    <label class="opt"><input type="checkbox" id="showDel"> Afficher les pièces supprimées</label>
+    <label class="opt"><input type="checkbox" id="showHid"> Afficher les pièces masquées</label>
+    <div id="count" class="muted" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <b>Mise à jour de la liste</b>
+    <p class="muted">Téléchargez la dernière liste depuis GitHub ou choisissez un CSV exporté depuis Access.</p>
+    <button id="downloadGithub">Télécharger la dernière version depuis GitHub</button><br>
+    <input id="file" type="file" accept=".csv,.txt,text/*,application/vnd.ms-excel,application/csv,*/*" style="margin-top:8px">
+    <div id="status"></div>
+    <div id="importok"></div>
+    <button id="export">Exporter une sauvegarde locale</button>
+    <button id="clear" class="danger">Effacer la base locale</button>
+  </div>
+
+  <section id="results"></section>
+  <div id="detail" class="card detail"></div>
+</main>
+
+<script>
+"use strict";
+const GITHUB_CSV_URL = "https://raw.githubusercontent.com/Didierdu11/GMAO/main/T_piece_de_rechange.csv";
+const DB_NAME = "pieces-rechange", DB_STORE = "kv", DB_KEY = "state-v8";
+const REQUIRED = ["N° pièce", "Désignation"];
+const LOC_COLS = ["Meuble", "Tiroir", "Position"];
+const FIELDS = ["N° pièce","CodeSAP","Désignation","Référence","Fabriquant","Référence fabricant","IDFamille","Fournisseur","Prix","Stock","Stock sécurité","Stock MAXI","Coût reconditionnement","Emplacement","Notes","Pièce à réparer","Delai de reappro","photos","Remis en état","lien plan meca","Criticité","Pieces SAP","Masqué","Statut_piece","Statut_Date","Meuble","Tiroir","Position","Supprime","Date_supp","Nom_Supp"];
+const MAX_RESULTS = 150;
+const LOCAL_CSV_URL = "T_piece_de_rechange.csv";
+
+let data = [], meta = null, byId = new Map();
+
+const $ = s => document.querySelector(s);
+const q = $("#q"), results = $("#results"), count = $("#count"), detail = $("#detail"),
+      statusBox = $("#status"), importOk = $("#importok");
+
+/* ---------- Utilitaires ---------- */
+function escapeHtml(v){
+  return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+}
+function normalize(v){
+  return String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[\s._\-\/]+/g, "");
+}
+function showMessage(type, text){ statusBox.className = type; statusBox.textContent = text; }
+const flag = v => String(v ?? "").trim() === "1";
+const num = v => { const n = parseFloat(String(v ?? "").replace(",", ".").replace(/[^\d.\-]/g, "")); return isNaN(n) ? null : n; };
+
+/* ---------- Emplacement : Meuble - Tiroir - Position ---------- */
+// Une valeur vide ou "0" signifie « non renseigné ».
+function locPart(v){ const s = String(v ?? "").trim(); return (s === "" || /^0+$/.test(s)) ? "" : s; }
+
+function getLocation(p){
+  const meuble = locPart(p["Meuble"]), tiroir = locPart(p["Tiroir"]), position = locPart(p["Position"]);
+  const free = String(p["Emplacement"] ?? "").trim();
+  const composed = (meuble || tiroir || position) ? [meuble || "?", tiroir || "?", position || "?"].join("-") : "";
+  return { meuble, tiroir, position, free, composed };
+}
+
+function locationHtml(p){
+  const L = getLocation(p);
+  if(!L.composed && !L.free) return '<div class="free" style="color:#66727c">Emplacement non renseigné</div>';
+  let h = "";
+  if(L.composed){
+    const chip = (label, v) => '<div class="chip' + (v ? "" : " empty") + '"><small>' + label + '</small><b>' + escapeHtml(v || "—") + '</b></div>';
+    h += '<div class="loc">' + chip("Meuble", L.meuble) + '<span class="sep">-</span>' + chip("Tiroir", L.tiroir) +
+         '<span class="sep">-</span>' + chip("Position", L.position) + '</div>';
+  }
+  if(L.free) h += (L.composed ? '<div class="note">Précision : ' : '<div class="free">') + escapeHtml(L.free) + '</div>';
+  return h;
+}
+
+/* ---------- Index de recherche ---------- */
+function buildIndex(p){
+  const L = getLocation(p);
+  const locText = [
+    L.composed,
+    L.meuble && "m" + L.meuble, L.tiroir && "t" + L.tiroir, L.position && "p" + L.position,
+    L.meuble && "meuble" + L.meuble, L.tiroir && "tiroir" + L.tiroir, L.position && "position" + L.position
+  ].filter(Boolean).join(" ");
+  const base = ["N° pièce","CodeSAP","Désignation","Référence","Fabriquant","Référence fabricant","Fournisseur","Emplacement","Notes"]
+    .map(f => p[f]).join(" ");
+  p._idx = normalize(base + " " + locText);
+  p._ref = normalize([p["Référence"], p["CodeSAP"], p["N° pièce"], p["Référence fabricant"]].join(" "));
+  p._refs = [p["Référence"], p["CodeSAP"], p["N° pièce"], p["Référence fabricant"]].map(normalize).filter(Boolean);
+  p._loc = normalize(L.composed);
+}
+
+function score(p, tokens){
+  let s = 0;
+  for(const t of tokens){
+    if(p._refs.includes(t)) s += 100;
+    else if(p._refs.some(r => r.startsWith(t))) s += 40;
+    else if(p._loc === t) s += 60;
+  }
+  return s;
+}
+
+/* ---------- Affichage ---------- */
+function stockTag(p){
+  const s = num(p["Stock"]), min = num(p["Stock sécurité"]);
+  if(s === null) return "";
+  if(s <= 0) return '<span class="tag out">Rupture</span>';
+  if(min !== null && min > 0 && s <= min) return '<span class="tag low">Stock bas</span>';
+  return "";
+}
+
+function render(){
+  const showDel = $("#showDel").checked, showHid = $("#showHid").checked;
+  const tokens = q.value.trim().split(/\s+/).map(normalize).filter(Boolean);
+  let m = data.filter(p => (showDel || !flag(p["Supprime"])) && (showHid || !flag(p["Masqué"])) && tokens.every(t => p._idx.includes(t)));
+  if(tokens.length) m = m.map(p => [score(p, tokens), p]).sort((a, b) => b[0] - a[0]).map(x => x[1]);
+  count.textContent = m.length.toLocaleString("fr-FR") + " résultat(s) sur " + data.length.toLocaleString("fr-FR");
+  if(!data.length){
+    results.innerHTML = '<div class="card muted">Aucune donnée. Téléchargez la liste depuis GitHub ou importez un CSV.</div>';
+    return;
+  }
+  results.innerHTML = m.slice(0, MAX_RESULTS).map(p =>
+    '<div class="result" data-id="' + escapeHtml(p["N° pièce"]) + '">' +
+      '<div class="ref">' + escapeHtml(p["Référence"] || p["CodeSAP"] || p["N° pièce"]) + stockTag(p) +
+      (flag(p["Supprime"]) ? '<span class="tag out">Supprimée</span>' : "") +
+      (flag(p["Masqué"]) ? '<span class="tag">Masquée</span>' : "") + '</div>' +
+      '<div>' + escapeHtml(p["Désignation"]) + '</div>' +
+      locationHtml(p) +
+      '<div class="muted">Code SAP : ' + escapeHtml(p["CodeSAP"] || "—") + ' · Stock : ' + escapeHtml(p["Stock"] || "0") + '</div>' +
+    '</div>').join("") +
+    (m.length > MAX_RESULTS ? '<div class="card muted">Affinez la recherche pour afficher les résultats suivants.</div>' : "");
+}
+
+results.addEventListener("click", e => {
+  const el = e.target.closest(".result");
+  if(el) showDetail(byId.get(el.dataset.id));
+});
+
+function showDetail(p){
+  if(!p) return;
+  detail.className = "card detail show";
+  detail.innerHTML = "<h2>Détail de la pièce</h2>" + locationHtml(p) +
+    FIELDS.map(f => '<div class="row"><b>' + escapeHtml(f) + '</b><span>' + escapeHtml(p[f] || "") + '</span></div>').join("") +
+    '<button id="closeDetail">Fermer</button>';
+  $("#closeDetail").addEventListener("click", () => detail.className = "card detail");
+  detail.scrollIntoView({behavior: "smooth"});
+}
+
+/* ---------- CSV ---------- */
+function parseCSV(text){
+  const rows = [];
+  let row = [], cell = "", quoted = false;
+  for(let i = 0; i < text.length; i++){
+    const c = text[i], n = text[i + 1];
+    if(c === '"'){
+      if(quoted && n === '"'){ cell += '"'; i++; } else quoted = !quoted;
+    } else if(c === ";" && !quoted){
+      row.push(cell); cell = "";
+    } else if((c === "\n" || c === "\r") && !quoted){
+      if(c === "\r" && n === "\n") i++;
+      row.push(cell);
+      if(row.some(v => v.trim() !== "")) rows.push(row);
+      row = []; cell = "";
+    } else cell += c;
+  }
+  if(cell !== "" || row.length){
+    row.push(cell);
+    if(row.some(v => v.trim() !== "")) rows.push(row);
+  }
+  return rows;
+}
+
+// UTF-8 si valide, sinon Windows-1252 (export Access)
+function decodeBuffer(buffer){
+  try{ return new TextDecoder("utf-8", {fatal: true}).decode(buffer); }
+  catch(e){ return new TextDecoder("windows-1252").decode(buffer); }
+}
+
+function setData(items){
+  data = items; byId = new Map();
+  data.forEach(p => { buildIndex(p); byId.set(String(p["N° pièce"]), p); });
+}
+
+async function importCsvText(text, fileName){
+  const rows = parseCSV(text.replace(/^\uFEFF|^ï»¿/, ""));
+  if(rows.length < 2) throw new Error("Le fichier ne contient aucune ligne de données.");
+  const headers = rows[0].map(h => h.trim());
+  const missing = REQUIRED.filter(h => !headers.includes(h));
+  if(missing.length) throw new Error("Colonnes manquantes : " + missing.join(", "));
+  const missingLoc = LOC_COLS.filter(h => !headers.includes(h));
+  const items = rows.slice(1).map(row => {
+    const item = {};
+    headers.forEach((h, i) => item[h] = (row[i] || "").trim());
+    return item;
+  }).filter(it => it["N° pièce"] !== "" || it["Désignation"] !== "");
+  if(!items.length) throw new Error("Aucune pièce valide détectée.");
+
+  setData(items);
+  meta = {file: fileName, date: new Date().toLocaleString("fr-FR"), warn: missingLoc.length ? "Colonnes d'emplacement absentes : " + missingLoc.join(", ") : ""};
+  let saved = true;
+  try{ await dbSave(); }catch(e){ console.warn("Sauvegarde locale impossible", e); saved = false; }
+  showMessage(saved ? "" : "error", saved ? "" : "Liste chargée, mais non enregistrée sur cet appareil (elle sera à recharger au prochain démarrage).");
+  updateImportInfo(); render();
+}
+
+async function fetchCsv(url){
+  const response = await fetch(url + (url.includes("?") ? "&" : "?") + "t=" + Date.now(), {cache: "no-store"});
+  if(!response.ok) throw new Error("HTTP " + response.status);
+  return decodeBuffer(await response.arrayBuffer());
+}
+
+async function downloadFromGitHub(){
+  showMessage("info", "Téléchargement de la dernière liste…");
+  const sources = [
+    [GITHUB_CSV_URL, "T_piece_de_rechange.csv — GitHub"],
+    [LOCAL_CSV_URL, "T_piece_de_rechange.csv — copie du site"]
+  ];
+  const errors = [];
+  for(const [url, label] of sources){
+    try{
+      const text = await fetchCsv(url);
+      await importCsvText(text, label);
+      return;
+    }catch(error){
+      console.error(url, error);
+      errors.push(label.split("— ")[1] + " : " + (error instanceof TypeError ? "connexion impossible ou bloquée" : error.message));
+    }
+  }
+  showMessage("error", "Téléchargement impossible (" + errors.join(" · ") + "). Vérifiez la connexion, que le dépôt GitHub est public et que la page est ouverte en https:// (pas en aperçu ni en file://). Sinon, utilisez « Choisir un fichier » ci-dessous.");
+}
+
+/* ---------- Stockage local (IndexedDB, bien plus grand que localStorage) ---------- */
+function dbOpen(){
+  return new Promise((resolve, reject) => {
+    if(!window.indexedDB) return reject(new Error("IndexedDB indisponible"));
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(DB_STORE);
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function dbSave(){
+  const db = await dbOpen();
+  const clean = data.map(p => { const o = {}; FIELDS.concat(Object.keys(p)).forEach(k => { if(k[0] !== "_" && k in p) o[k] = p[k]; }); return o; });
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).put({data: clean, meta}, DB_KEY);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+  });
+}
+async function dbLoad(){
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const r = db.transaction(DB_STORE).objectStore(DB_STORE).get(DB_KEY);
+    r.onsuccess = () => { db.close(); resolve(r.result || null); };
+    r.onerror = () => { db.close(); reject(r.error); };
+  });
+}
+async function dbClear(){
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).delete(DB_KEY);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+/* ---------- Interface ---------- */
+function updateImportInfo(){
+  if(meta && data.length){
+    importOk.innerHTML = '<div class="ok"><b>✓ Fichier chargé correctement</b><br>' +
+      data.length.toLocaleString("fr-FR") + " lignes importées · " + escapeHtml(meta.file) + " · " + escapeHtml(meta.date) +
+      (meta.warn ? '<br>⚠ ' + escapeHtml(meta.warn) : "") + '</div>';
+  } else importOk.innerHTML = '<div class="muted">Aucun fichier chargé.</div>';
+}
+
+async function handleFile(file){
+  if(!file) return;
+  showMessage("info", "Lecture de " + file.name + "…");
+  try{
+    const buffer = file.arrayBuffer ? await file.arrayBuffer() : await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = () => rej(new Error("Erreur de lecture du fichier."));
+      r.readAsArrayBuffer(file);
+    });
+    await importCsvText(decodeBuffer(buffer), file.name);
+  }catch(error){
+    console.error(error);
+    showMessage("error", "Import impossible : " + error.message);
+  }
+}
+const fileInput = $("#file");
+["change", "input"].forEach(ev => fileInput.addEventListener(ev, () => {
+  const file = fileInput.files && fileInput.files[0];
+  if(file){ handleFile(file); setTimeout(() => { fileInput.value = ""; }, 0); }
+}));
+window.addEventListener("error", e => showMessage("error", "Erreur : " + e.message));
+window.addEventListener("unhandledrejection", e => showMessage("error", "Erreur : " + (e.reason && e.reason.message || e.reason)));
+
+$("#downloadGithub").addEventListener("click", downloadFromGitHub);
+q.addEventListener("input", render);
+$("#showDel").addEventListener("change", render);
+$("#showHid").addEventListener("change", render);
+
+$("#clear").addEventListener("click", async () => {
+  if(!confirm("Effacer la base locale ?")) return;
+  try{ await dbClear(); }catch(e){ console.warn(e); }
+  setData([]); meta = null;
+  detail.className = "card detail";
+  showMessage("info", "Base locale effacée.");
+  updateImportInfo(); render();
+});
+
+$("#export").addEventListener("click", () => {
+  if(!data.length){ showMessage("error", "Rien à exporter."); return; }
+  const clean = data.map(p => { const o = {}; Object.keys(p).forEach(k => { if(k[0] !== "_") o[k] = p[k]; }); return o; });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(clean, null, 2)], {type: "application/json"}));
+  a.download = "pieces-sauvegarde.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 500);
+});
+
+(async function init(){
+  try{
+    const saved = await dbLoad();
+    if(saved && saved.data && saved.data.length){ setData(saved.data); meta = saved.meta; }
+  }catch(e){ console.warn("Stockage local indisponible", e); }
+  updateImportInfo(); render();
+})();
+</script>
+</body>
+</html>
