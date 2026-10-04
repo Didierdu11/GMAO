@@ -38,6 +38,13 @@ button{border:0;background:#135d9e;color:#fff;margin:8px 4px 0 0;cursor:pointer}
 .tag{display:inline-block;font-size:12px;border-radius:6px;padding:2px 7px;margin-left:6px;vertical-align:middle;background:#eee;color:#555}
 .tag.low{background:#fff0d6;color:#8a5a00}.tag.out{background:#feecec;color:#9b2020}
 .update{background:#fff8e1;border-left:5px solid #e0a800}
+.upd{padding:10px 14px;border-left:6px solid #9aa4ad}
+.upd.green{border-left-color:#1e8e3e;background:#eaf7ee}.upd.red{border-left-color:#c62828;background:#fdeded}
+.updrow{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.updrow b{font-size:16px}.upd.green b{color:#176b31}.upd.red b{color:#a52828}
+.updrow button{margin:0;padding:8px 14px;font-size:14px}
+.upd.green button{background:#1e8e3e}.upd.red button{background:#c62828}.upd.gray button{background:#66727c}
+.upd details{margin-top:6px}.upd summary{cursor:pointer;font-size:13px}.upd input[type=file]{margin-top:6px;padding:6px;font-size:14px}
 .detail{display:none}.detail.show{display:block}
 .row{display:flex;justify-content:space-between;gap:15px;border-bottom:1px solid #e5e8eb;padding:7px 0}
 .row b{color:#43515c}.row span{text-align:right;overflow-wrap:anywhere}
@@ -58,18 +65,13 @@ button{border:0;background:#135d9e;color:#fff;margin:8px 4px 0 0;cursor:pointer}
 
   <div id="installCard" class="card update" style="display:none"></div>
 
-  <div id="updateBanner" class="card update" style="display:none"></div>
-
-  <div class="card">
-    <b>Mise à jour de la liste</b>
-    <p class="muted">Téléchargez la dernière liste depuis GitHub ou choisissez un CSV exporté depuis Access.</p>
-    <button id="downloadGithub">Télécharger la dernière version depuis GitHub</button>
-    <button id="checkNow" style="background:#43515c">Vérifier les mises à jour</button><div id="checkInfo" class="muted" style="margin-top:6px"></div>
-    <input id="file" type="file" accept=".csv,.txt,text/*,application/vnd.ms-excel,application/csv,*/*" style="margin-top:8px">
+  <div id="updateCard" class="card upd gray">
+    <div class="updrow"><b id="updText">Liste : chargement…</b><button id="updBtn">Vérifier</button></div>
+    <div id="updSub" class="muted"></div>
+    <details><summary class="muted">Importer un fichier CSV</summary>
+      <input id="file" type="file" accept=".csv,.txt,text/*,application/vnd.ms-excel,application/csv,*/*">
+    </details>
     <div id="status"></div>
-    <div id="importok"></div>
-    <button id="export">Exporter une sauvegarde locale</button>
-    <button id="clear" class="danger">Effacer la base locale</button>
   </div>
 
   <section id="results"></section>
@@ -92,7 +94,7 @@ let data = [], meta = null, byId = new Map();
 
 const $ = s => document.querySelector(s);
 const q = $("#q"), results = $("#results"), count = $("#count"), detail = $("#detail"),
-      statusBox = $("#status"), importOk = $("#importok");
+      statusBox = $("#status");
 
 /* ---------- Utilitaires ---------- */
 function escapeHtml(v){
@@ -265,7 +267,7 @@ async function importCsvText(text, fileName, extra){
   let saved = true;
   try{ await dbSave(); }catch(e){ console.warn("Sauvegarde locale impossible", e); saved = false; }
   showMessage(saved ? "" : "error", saved ? "" : "Liste chargée, mais non enregistrée sur cet appareil (elle sera à recharger au prochain démarrage).");
-  dismissedKey = null; hideBanner();
+  updState = meta.source === "github" ? "ok" : "unknown";
   updateImportInfo(); render();
 }
 
@@ -300,7 +302,7 @@ async function downloadFromGitHub(){
 }
 
 /* ---------- Vérification des mises à jour (arrière-plan) ---------- */
-let lastCheck = 0, checking = false, dismissedKey = null;
+let lastCheck = 0, checking = false, updState = "unknown"; // unknown | ok | new
 
 function hashText(s){ // empreinte rapide du contenu (cyrb53)
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
@@ -317,43 +319,23 @@ async function fetchLatestCommit(){
   return {sha: c.sha, date: c.commit && c.commit.committer && c.commit.committer.date};
 }
 const fmtDate = d => d ? new Date(d).toLocaleString("fr-FR", {dateStyle: "long", timeStyle: "short"}) : "";
-function hideBanner(){ $("#updateBanner").style.display = "none"; }
-function showBanner(info, key){
-  const b = $("#updateBanner");
-  b.innerHTML = '<b>' + (meta ? "🔔 Une version plus récente est disponible" : "📥 Aucune liste chargée") + '</b>' +
-    '<div class="muted" style="margin:6px 0">' + (info.date ? "Version GitHub du " + escapeHtml(fmtDate(info.date)) + ". " : "") +
-    (meta ? "Votre liste date du " + escapeHtml(meta.commitDate ? fmtDate(meta.commitDate) : meta.date) + "." : "Téléchargez la liste pour commencer.") + '</div>' +
-    '<button id="upNow">Télécharger maintenant</button><button id="upLater" style="background:#66727c">Plus tard</button>';
-  b.style.display = "block";
-  $("#upNow").addEventListener("click", downloadFromGitHub);
-  $("#upLater").addEventListener("click", () => { dismissedKey = key; hideBanner(); });
-}
 async function checkUpdate(manual){
   if(checking) return;
   if(!navigator.onLine){ if(manual) showMessage("error", "Vous êtes hors connexion."); return; }
-  checking = true;
-  if(manual) showMessage("info", "Vérification en cours…");
+  checking = true; updateImportInfo();
   try{
-    let info = {}, viaApi = false, available, key;
+    let info = {}, viaApi = false;
     try{ info = await fetchLatestCommit(); viaApi = true; }catch(e){ console.warn("API GitHub indisponible", e); }
-    if(viaApi && meta && meta.sha){ available = info.sha !== meta.sha; key = info.sha; }
-    else{ // pas d'identifiant mémorisé : on compare le contenu du fichier
-      const hash = hashText(await fetchCsv(GITHUB_CSV_URL));
-      available = !meta || meta.hash !== hash; key = info.sha || hash;
-    }
+    let available;
+    if(viaApi && meta && meta.sha) available = info.sha !== meta.sha;
+    else available = !meta || meta.hash !== hashText(await fetchCsv(GITHUB_CSV_URL)); // pas d'identifiant : on compare le contenu
     lastCheck = Date.now();
-    $("#checkInfo").textContent = "Dernière vérification : " + new Date(lastCheck).toLocaleTimeString("fr-FR", {hour: "2-digit", minute: "2-digit"});
-    if(available){
-      if(manual) showMessage("", "");
-      if(manual || key !== dismissedKey) showBanner(info, key);
-    }else{
-      hideBanner();
-      if(manual) showMessage("ok", "✓ Vous avez déjà la dernière version.");
-    }
+    updState = available ? "new" : "ok";
+    if(manual) showMessage("", "");
   }catch(error){
     console.warn("Vérification impossible", error);
     if(manual) showMessage("error", "Vérification impossible : " + (error instanceof TypeError ? "GitHub injoignable." : error.message));
-  }finally{ checking = false; }
+  }finally{ checking = false; updateImportInfo(); }
 }
 
 /* ---------- Stockage local (IndexedDB, bien plus grand que localStorage) ---------- */
@@ -396,11 +378,17 @@ async function dbClear(){
 
 /* ---------- Interface ---------- */
 function updateImportInfo(){
-  if(meta && data.length){
-    importOk.innerHTML = '<div class="ok"><b>✓ Fichier chargé correctement</b><br>' +
-      data.length.toLocaleString("fr-FR") + " lignes importées · " + escapeHtml(meta.file) + " · " + escapeHtml(meta.date) +
-      (meta.commitDate ? "<br>Version GitHub du " + escapeHtml(fmtDate(meta.commitDate)) : "") + (meta.warn ? '<br>⚠ ' + escapeHtml(meta.warn) : "") + '</div>';
-  } else importOk.innerHTML = '<div class="muted">Aucun fichier chargé.</div>';
+  const card = $("#updateCard"), txt = $("#updText"), btn = $("#updBtn"), sub = $("#updSub");
+  let cls = "gray", t, b = "Vérifier";
+  if(checking){ t = "Vérification…"; }
+  else if(!meta || !data.length){ cls = "red"; t = "Aucune liste chargée"; b = "Télécharger"; }
+  else if(updState === "new"){ cls = "red"; t = "Mise à jour disponible"; b = "Télécharger"; }
+  else if(updState === "ok"){ cls = "green"; t = "✓ Liste à jour"; }
+  else t = "Liste non vérifiée";
+  card.className = "card upd " + cls; txt.textContent = t; btn.textContent = b; btn.disabled = checking;
+  sub.textContent = meta && data.length
+    ? data.length.toLocaleString("fr-FR") + " pièces · " + (meta.commitDate ? "version du " + fmtDate(meta.commitDate) : "chargée le " + meta.date) + (meta.warn ? " · ⚠ " + meta.warn : "")
+    : "Téléchargez la liste depuis GitHub ou importez un CSV.";
 }
 
 async function handleFile(file){
@@ -427,30 +415,10 @@ const fileInput = $("#file");
 window.addEventListener("error", e => showMessage("error", "Erreur : " + e.message));
 window.addEventListener("unhandledrejection", e => showMessage("error", "Erreur : " + (e.reason && e.reason.message || e.reason)));
 
-$("#downloadGithub").addEventListener("click", downloadFromGitHub);
-$("#checkNow").addEventListener("click", () => checkUpdate(true));
+$("#updBtn").addEventListener("click", () => (!meta || !data.length || updState === "new") ? downloadFromGitHub() : checkUpdate(true));
 q.addEventListener("input", render);
 $("#showDel").addEventListener("change", render);
 $("#showHid").addEventListener("change", render);
-
-$("#clear").addEventListener("click", async () => {
-  if(!confirm("Effacer la base locale ?")) return;
-  try{ await dbClear(); }catch(e){ console.warn(e); }
-  setData([]); meta = null;
-  detail.className = "card detail";
-  showMessage("info", "Base locale effacée.");
-  updateImportInfo(); render();
-});
-
-$("#export").addEventListener("click", () => {
-  if(!data.length){ showMessage("error", "Rien à exporter."); return; }
-  const clean = data.map(p => { const o = {}; Object.keys(p).forEach(k => { if(k[0] !== "_") o[k] = p[k]; }); return o; });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(clean, null, 2)], {type: "application/json"}));
-  a.download = "pieces-sauvegarde.json";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 500);
-});
 
 /* ---------- Application installable + hors connexion ---------- */
 if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
