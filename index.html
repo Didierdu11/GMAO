@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#135d9e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pièces">
 <title>Pièces de rechange</title>
 <style>
 *{box-sizing:border-box}
@@ -31,6 +37,7 @@ button{border:0;background:#135d9e;color:#fff;margin:8px 4px 0 0;cursor:pointer}
 .note{font-size:13px;color:#66727c}
 .tag{display:inline-block;font-size:12px;border-radius:6px;padding:2px 7px;margin-left:6px;vertical-align:middle;background:#eee;color:#555}
 .tag.low{background:#fff0d6;color:#8a5a00}.tag.out{background:#feecec;color:#9b2020}
+.update{background:#fff8e1;border-left:5px solid #e0a800}
 .detail{display:none}.detail.show{display:block}
 .row{display:flex;justify-content:space-between;gap:15px;border-bottom:1px solid #e5e8eb;padding:7px 0}
 .row b{color:#43515c}.row span{text-align:right;overflow-wrap:anywhere}
@@ -42,16 +49,22 @@ button{border:0;background:#135d9e;color:#fff;margin:8px 4px 0 0;cursor:pointer}
 <header><h1>Pièces de rechange</h1><div>Recherche locale hors connexion</div></header>
 <main>
   <div class="card">
-    <input id="q" type="text" placeholder="Référence, désignation, emplacement (ex. 20-3-401)…" autocomplete="off">
+    <input id="q" type="text" placeholder="Référence, désignation, emplacement (ex. 20-3-401, roul*6002)…" autocomplete="off">
     <label class="opt"><input type="checkbox" id="showDel"> Afficher les pièces supprimées</label>
     <label class="opt"><input type="checkbox" id="showHid"> Afficher les pièces masquées</label>
-    <div id="count" class="muted" style="margin-top:8px"></div>
+    <div class="muted" style="margin-top:8px">Astuce : <b>*</b> remplace une ou plusieurs lettres (ex. <i>roul*6002</i>, <i>*joint</i>).</div>
+    <div id="count" class="muted" style="margin-top:4px"></div>
   </div>
+
+  <div id="installCard" class="card update" style="display:none"></div>
+
+  <div id="updateBanner" class="card update" style="display:none"></div>
 
   <div class="card">
     <b>Mise à jour de la liste</b>
     <p class="muted">Téléchargez la dernière liste depuis GitHub ou choisissez un CSV exporté depuis Access.</p>
-    <button id="downloadGithub">Télécharger la dernière version depuis GitHub</button><br>
+    <button id="downloadGithub">Télécharger la dernière version depuis GitHub</button>
+    <button id="checkNow" style="background:#43515c">Vérifier les mises à jour</button><div id="checkInfo" class="muted" style="margin-top:6px"></div>
     <input id="file" type="file" accept=".csv,.txt,text/*,application/vnd.ms-excel,application/csv,*/*" style="margin-top:8px">
     <div id="status"></div>
     <div id="importok"></div>
@@ -72,6 +85,8 @@ const LOC_COLS = ["Meuble", "Tiroir", "Position"];
 const FIELDS = ["N° pièce","CodeSAP","Désignation","Référence","Fabriquant","Référence fabricant","IDFamille","Fournisseur","Prix","Stock","Stock sécurité","Stock MAXI","Coût reconditionnement","Emplacement","Notes","Pièce à réparer","Delai de reappro","photos","Remis en état","lien plan meca","Criticité","Pieces SAP","Masqué","Statut_piece","Statut_Date","Meuble","Tiroir","Position","Supprime","Date_supp","Nom_Supp"];
 const MAX_RESULTS = 150;
 const LOCAL_CSV_URL = "T_piece_de_rechange.csv";
+const API_COMMIT_URL = "https://api.github.com/repos/Didierdu11/GMAO/commits?path=T_piece_de_rechange.csv&per_page=1";
+const CHECK_EVERY = 30 * 60 * 1000; // vérification en arrière-plan toutes les 30 min
 
 let data = [], meta = null, byId = new Map();
 
@@ -121,21 +136,30 @@ function buildIndex(p){
     L.composed,
     L.meuble && "m" + L.meuble, L.tiroir && "t" + L.tiroir, L.position && "p" + L.position,
     L.meuble && "meuble" + L.meuble, L.tiroir && "tiroir" + L.tiroir, L.position && "position" + L.position
-  ].filter(Boolean).join(" ");
-  const base = ["N° pièce","CodeSAP","Désignation","Référence","Fabriquant","Référence fabricant","Fournisseur","Emplacement","Notes"]
-    .map(f => p[f]).join(" ");
-  p._idx = normalize(base + " " + locText);
-  p._ref = normalize([p["Référence"], p["CodeSAP"], p["N° pièce"], p["Référence fabricant"]].join(" "));
+  ].filter(Boolean);
+  const base = ["N° pièce","CodeSAP","Désignation","Référence","Fabriquant","Référence fabricant","Fournisseur","Emplacement","Notes"].map(f => p[f]);
+  // "|" sépare les champs : un * ne peut pas "sauter" d'un champ à l'autre
+  p._idx = base.concat(locText).map(normalize).filter(Boolean).join("|");
   p._refs = [p["Référence"], p["CodeSAP"], p["N° pièce"], p["Référence fabricant"]].map(normalize).filter(Boolean);
   p._loc = normalize(L.composed);
 }
 
-function score(p, tokens){
+// Jeton de recherche -> test. "*" = joker (zéro, une ou plusieurs lettres)
+function makeMatcher(token){
+  if(!token.includes("*")){
+    return {test: s => s.includes(token), exact: r => r === token, start: r => r.startsWith(token)};
+  }
+  const body = token.split("*").map(x => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^|]*");
+  const any = new RegExp(body), full = new RegExp("^" + body + "$"), head = new RegExp("^" + body);
+  return {test: s => any.test(s), exact: r => full.test(r), start: r => head.test(r)};
+}
+
+function score(p, matchers){
   let s = 0;
-  for(const t of tokens){
-    if(p._refs.includes(t)) s += 100;
-    else if(p._refs.some(r => r.startsWith(t))) s += 40;
-    else if(p._loc === t) s += 60;
+  for(const m of matchers){
+    if(p._refs.some(m.exact)) s += 100;
+    else if(p._refs.some(m.start)) s += 40;
+    else if(m.exact(p._loc)) s += 60;
   }
   return s;
 }
@@ -152,8 +176,9 @@ function stockTag(p){
 function render(){
   const showDel = $("#showDel").checked, showHid = $("#showHid").checked;
   const tokens = q.value.trim().split(/\s+/).map(normalize).filter(Boolean);
-  let m = data.filter(p => (showDel || !flag(p["Supprime"])) && (showHid || !flag(p["Masqué"])) && tokens.every(t => p._idx.includes(t)));
-  if(tokens.length) m = m.map(p => [score(p, tokens), p]).sort((a, b) => b[0] - a[0]).map(x => x[1]);
+  const matchers = tokens.map(makeMatcher);
+  let m = data.filter(p => (showDel || !flag(p["Supprime"])) && (showHid || !flag(p["Masqué"])) && matchers.every(x => x.test(p._idx)));
+  if(tokens.length) m = m.map(p => [score(p, matchers), p]).sort((a, b) => b[0] - a[0]).map(x => x[1]);
   count.textContent = m.length.toLocaleString("fr-FR") + " résultat(s) sur " + data.length.toLocaleString("fr-FR");
   if(!data.length){
     results.innerHTML = '<div class="card muted">Aucune donnée. Téléchargez la liste depuis GitHub ou importez un CSV.</div>';
@@ -221,7 +246,7 @@ function setData(items){
   data.forEach(p => { buildIndex(p); byId.set(String(p["N° pièce"]), p); });
 }
 
-async function importCsvText(text, fileName){
+async function importCsvText(text, fileName, extra){
   const rows = parseCSV(text.replace(/^\uFEFF|^ï»¿/, ""));
   if(rows.length < 2) throw new Error("Le fichier ne contient aucune ligne de données.");
   const headers = rows[0].map(h => h.trim());
@@ -236,10 +261,11 @@ async function importCsvText(text, fileName){
   if(!items.length) throw new Error("Aucune pièce valide détectée.");
 
   setData(items);
-  meta = {file: fileName, date: new Date().toLocaleString("fr-FR"), warn: missingLoc.length ? "Colonnes d'emplacement absentes : " + missingLoc.join(", ") : ""};
+  meta = {file: fileName, date: new Date().toLocaleString("fr-FR"), hash: hashText(text), ...(extra || {}), warn: missingLoc.length ? "Colonnes d'emplacement absentes : " + missingLoc.join(", ") : ""};
   let saved = true;
   try{ await dbSave(); }catch(e){ console.warn("Sauvegarde locale impossible", e); saved = false; }
   showMessage(saved ? "" : "error", saved ? "" : "Liste chargée, mais non enregistrée sur cet appareil (elle sera à recharger au prochain démarrage).");
+  dismissedKey = null; hideBanner();
   updateImportInfo(); render();
 }
 
@@ -259,7 +285,11 @@ async function downloadFromGitHub(){
   for(const [url, label] of sources){
     try{
       const text = await fetchCsv(url);
-      await importCsvText(text, label);
+      let extra = {source: url === GITHUB_CSV_URL ? "github" : "site"};
+      if(url === GITHUB_CSV_URL){
+        try{ const c = await fetchLatestCommit(); extra.sha = c.sha; extra.commitDate = c.date; }catch(e){ console.warn("API GitHub", e); }
+      }
+      await importCsvText(text, label, extra);
       return;
     }catch(error){
       console.error(url, error);
@@ -267,6 +297,63 @@ async function downloadFromGitHub(){
     }
   }
   showMessage("error", "Téléchargement impossible (" + errors.join(" · ") + "). Vérifiez la connexion, que le dépôt GitHub est public et que la page est ouverte en https:// (pas en aperçu ni en file://). Sinon, utilisez « Choisir un fichier » ci-dessous.");
+}
+
+/* ---------- Vérification des mises à jour (arrière-plan) ---------- */
+let lastCheck = 0, checking = false, dismissedKey = null;
+
+function hashText(s){ // empreinte rapide du contenu (cyrb53)
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for(let i = 0; i < s.length; i++){ const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+async function fetchLatestCommit(){
+  const r = await fetch(API_COMMIT_URL);
+  if(!r.ok) throw new Error("HTTP " + r.status);
+  const j = await r.json(), c = j && j[0];
+  if(!c) throw new Error("Réponse vide");
+  return {sha: c.sha, date: c.commit && c.commit.committer && c.commit.committer.date};
+}
+const fmtDate = d => d ? new Date(d).toLocaleString("fr-FR", {dateStyle: "long", timeStyle: "short"}) : "";
+function hideBanner(){ $("#updateBanner").style.display = "none"; }
+function showBanner(info, key){
+  const b = $("#updateBanner");
+  b.innerHTML = '<b>' + (meta ? "🔔 Une version plus récente est disponible" : "📥 Aucune liste chargée") + '</b>' +
+    '<div class="muted" style="margin:6px 0">' + (info.date ? "Version GitHub du " + escapeHtml(fmtDate(info.date)) + ". " : "") +
+    (meta ? "Votre liste date du " + escapeHtml(meta.commitDate ? fmtDate(meta.commitDate) : meta.date) + "." : "Téléchargez la liste pour commencer.") + '</div>' +
+    '<button id="upNow">Télécharger maintenant</button><button id="upLater" style="background:#66727c">Plus tard</button>';
+  b.style.display = "block";
+  $("#upNow").addEventListener("click", downloadFromGitHub);
+  $("#upLater").addEventListener("click", () => { dismissedKey = key; hideBanner(); });
+}
+async function checkUpdate(manual){
+  if(checking) return;
+  if(!navigator.onLine){ if(manual) showMessage("error", "Vous êtes hors connexion."); return; }
+  checking = true;
+  if(manual) showMessage("info", "Vérification en cours…");
+  try{
+    let info = {}, viaApi = false, available, key;
+    try{ info = await fetchLatestCommit(); viaApi = true; }catch(e){ console.warn("API GitHub indisponible", e); }
+    if(viaApi && meta && meta.sha){ available = info.sha !== meta.sha; key = info.sha; }
+    else{ // pas d'identifiant mémorisé : on compare le contenu du fichier
+      const hash = hashText(await fetchCsv(GITHUB_CSV_URL));
+      available = !meta || meta.hash !== hash; key = info.sha || hash;
+    }
+    lastCheck = Date.now();
+    $("#checkInfo").textContent = "Dernière vérification : " + new Date(lastCheck).toLocaleTimeString("fr-FR", {hour: "2-digit", minute: "2-digit"});
+    if(available){
+      if(manual) showMessage("", "");
+      if(manual || key !== dismissedKey) showBanner(info, key);
+    }else{
+      hideBanner();
+      if(manual) showMessage("ok", "✓ Vous avez déjà la dernière version.");
+    }
+  }catch(error){
+    console.warn("Vérification impossible", error);
+    if(manual) showMessage("error", "Vérification impossible : " + (error instanceof TypeError ? "GitHub injoignable." : error.message));
+  }finally{ checking = false; }
 }
 
 /* ---------- Stockage local (IndexedDB, bien plus grand que localStorage) ---------- */
@@ -312,7 +399,7 @@ function updateImportInfo(){
   if(meta && data.length){
     importOk.innerHTML = '<div class="ok"><b>✓ Fichier chargé correctement</b><br>' +
       data.length.toLocaleString("fr-FR") + " lignes importées · " + escapeHtml(meta.file) + " · " + escapeHtml(meta.date) +
-      (meta.warn ? '<br>⚠ ' + escapeHtml(meta.warn) : "") + '</div>';
+      (meta.commitDate ? "<br>Version GitHub du " + escapeHtml(fmtDate(meta.commitDate)) : "") + (meta.warn ? '<br>⚠ ' + escapeHtml(meta.warn) : "") + '</div>';
   } else importOk.innerHTML = '<div class="muted">Aucun fichier chargé.</div>';
 }
 
@@ -341,6 +428,7 @@ window.addEventListener("error", e => showMessage("error", "Erreur : " + e.messa
 window.addEventListener("unhandledrejection", e => showMessage("error", "Erreur : " + (e.reason && e.reason.message || e.reason)));
 
 $("#downloadGithub").addEventListener("click", downloadFromGitHub);
+$("#checkNow").addEventListener("click", () => checkUpdate(true));
 q.addEventListener("input", render);
 $("#showDel").addEventListener("change", render);
 $("#showHid").addEventListener("change", render);
@@ -364,12 +452,40 @@ $("#export").addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 500);
 });
 
+/* ---------- Application installable + hors connexion ---------- */
+if("serviceWorker" in navigator && /^https?:$/.test(location.protocol)){
+  navigator.serviceWorker.register("sw.js").catch(e => console.warn("Service worker", e));
+}
+if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); // évite l'effacement de la liste par le navigateur
+
+let installEvent = null;
+const standalone = window.matchMedia && matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+const installCard = $("#installCard");
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault(); installEvent = e;
+  if(standalone) return;
+  installCard.innerHTML = '<b>📲 Installer l\'application</b><div class="muted" style="margin:6px 0">Accès direct depuis l\'écran d\'accueil, même sans réseau.</div><button id="doInstall">Installer</button><button id="noInstall" style="background:#66727c">Plus tard</button>';
+  installCard.style.display = "block";
+  $("#doInstall").addEventListener("click", async () => { installCard.style.display = "none"; installEvent.prompt(); installEvent = null; });
+  $("#noInstall").addEventListener("click", () => installCard.style.display = "none");
+});
+window.addEventListener("appinstalled", () => installCard.style.display = "none");
+if(/iphone|ipad|ipod/i.test(navigator.userAgent) && !standalone){
+  installCard.innerHTML = '<b>📲 Installer sur iPhone / iPad</b><div class="muted" style="margin-top:6px">Touchez <b>Partager</b> puis <b>Sur l\'écran d\'accueil</b>.</div>';
+  installCard.style.display = "block";
+}
+
 (async function init(){
   try{
     const saved = await dbLoad();
     if(saved && saved.data && saved.data.length){ setData(saved.data); meta = saved.meta; }
   }catch(e){ console.warn("Stockage local indisponible", e); }
   updateImportInfo(); render();
+  setTimeout(() => checkUpdate(false), 1500);
+  const maybeCheck = () => { if(!document.hidden && Date.now() - lastCheck > CHECK_EVERY) checkUpdate(false); };
+  document.addEventListener("visibilitychange", maybeCheck);
+  window.addEventListener("online", () => checkUpdate(false));
+  setInterval(maybeCheck, 60000);
 })();
 </script>
 </body>
